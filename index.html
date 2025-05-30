@@ -1,0 +1,277 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TrendForge AI — Implementation Blueprint</title>
+  <style>
+    /*—‑—  BASIC RESET  —‑—*/
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      line-height:1.55;
+      color:#1f2937;
+      background:#f7f9fc;
+      padding:3rem 1rem;}
+    h1,h2,h3{font-weight:700;color:#111827;margin-bottom:.6em}
+    h1{font-size:2.2rem}
+    h2{font-size:1.6rem}
+    h3{font-size:1.25rem}
+    section{max-width:960px;margin:0 auto 2.8rem auto;background:#fff;padding:2rem 2.5rem;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,.05)}
+    p{margin-bottom:1rem}
+    ul{margin-left:1.4rem;margin-bottom:1rem}
+    li{margin-bottom:.4rem}
+    code{background:#f3f4f6;color:#b91c1c;padding:.15rem .35rem;border-radius:4px;font-size:.9rem}
+    pre{background:#0f172a;color:#e2e8f0;padding:1rem 1.5rem;border-radius:10px;margin-bottom:1.5rem;overflow-x:auto;font-size:.9rem}
+    table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem}
+    th,td{padding:.6rem .8rem;text-align:left;border:1px solid #e5e7eb}
+    th{background:#eff6ff;font-weight:600}
+    caption{font-weight:600;margin-bottom:.6rem}
+    .grid{display:grid;gap:1.3rem}
+    .two-col{grid-template-columns:1fr 1fr}
+    .badge{display:inline-block;background:#2563eb;color:#fff;padding:.15rem .5rem;border-radius:4px;font-size:.75rem;vertical-align:middle}
+    @media (max-width:640px){.two-col{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+
+<section>
+  <h1>TrendForge AI <span class="badge">v1.0 Blueprint</span></h1>
+  <p><strong>Goal:</strong> Build and monetise a self‑hosted n8n + OpenAI micro‑SaaS that automatically discovers trending topics, generates YouTube Shorts &amp; matching blog posts, publishes them and sends performance digests — all running on a single DigitalOcean droplet.</p>
+</section>
+
+<!-- 0. QUICK PROJECT RECAP -->
+<section>
+  <h2>0  |  Quick Project Recap</h2>
+  <ul>
+    <li><strong>Product Name:</strong> <em>TrendForge AI</em></li>
+    <li><strong>Main Flow:</strong> Scrape trends → Generate content via GPT‑4o → Render video &amp; thumbnail → Publish to YouTube &amp; WordPress → Social blast → Collect stats → Daily WhatsApp digest.</li>
+    <li><strong>Value Prop:</strong> “Zero‑touch” content engine for small creators — cheaper &amp; private vs. SaaS alternatives.</li>
+    <li><strong>Pricing Strategy:</strong> <code>$29/mo</code> self‑host licence or <code>$199 setup + $79/mo</code> hosted plan.</li>
+  </ul>
+</section>
+
+<!-- 1. INFRASTRUCTURE -->
+<section>
+  <h2>1  |  Infrastructure &amp; Accounts</h2>
+  <table>
+    <caption>Core Stack</caption>
+    <thead>
+      <tr><th>Component</th><th>Details / Rationale</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>DigitalOcean Droplet</td><td>Ubuntu 22.04, 2 vCPU, 4 GB RAM (≈ $18/mo).</td></tr>
+      <tr><td>Docker + docker‑compose</td><td>Single‑file deployment of n8n, Caddy &amp; Postgres.</td></tr>
+      <tr><td>Domain e.g. <code>trendforge.ai</code></td><td>Points to droplet; Caddy auto‑issues Let’s Encrypt cert.</td></tr>
+      <tr><td>n8n (latest)</td><td>Automation engine, password‑protected.</td></tr>
+      <tr><td>PostgreSQL 15</td><td>Stores workflow + analytics data.</td></tr>
+      <tr><td>OpenAI API Key</td><td>GPT‑4o for text, DALL·E 3 for thumbnails.</td></tr>
+      <tr><td>Google Cloud project</td><td>Enable YouTube Data API v3 for uploads.</td></tr>
+      <tr><td>SerpApi (or pytrends)</td><td>Google Trends scraping without TOS headache.</td></tr>
+      <tr><td>WordPress blog</td><td>Author account + Application Password for REST calls.</td></tr>
+      <tr><td>Pictory / Runway API</td><td>Turns script → auto‑edited Short video.</td></tr>
+      <tr><td>Twilio WhatsApp</td><td>Daily performance digest.</td></tr>
+      <tr><td>Stripe</td><td>Recurring billing (Starter, Pro, Agency tiers).</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 2. DOCKER COMPOSE -->
+<section>
+  <h2>2  |  docker‑compose.yml (core services)</h2>
+  <pre><code># ./docker-compose.yml
+version: "3.8"
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    restart: always
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASS}
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${PG_PASS}
+      - N8N_ENCRYPTION_KEY=${N8N_KEY}
+      - WEBHOOK_URL=https://trendforge.ai/
+    depends_on:
+      - postgres
+    volumes:
+      - n8n_data:/home/node/.n8n
+  postgres:
+    image: postgres:15
+    restart: always
+    environment:
+      - POSTGRES_PASSWORD=${PG_PASS}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+  caddy:
+    image: caddy:latest
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    depends_on:
+      - n8n
+volumes: { n8n_data: {}, pg_data: {}, caddy_data: {} }</code></pre>
+</section>
+
+<!-- 3. WORKFLOW  -->
+<section>
+  <h2>3  |  n8n Workflow — Node Map</h2>
+  <div class="grid two-col">
+    <div>
+      <h3>3.1  Trigger Lane</h3>
+      <ul>
+        <li><strong>Cron</strong> — every 60 min.</li>
+        <li><strong>Set</strong> — inject Flow‑ID &amp; timestamp.</li>
+      </ul>
+      <h3>3.2  Discover Lane</h3>
+      <ul>
+        <li><strong>HTTP (SerpApi)</strong> — Google Trends: <code>geo=PAK&amp;date=today 1-d</code>.</li>
+        <li><strong>HTML Extract</strong> — pull rising topics.</li>
+        <li><strong>IF</strong> — keep if matches niche keywords Sheet.</li>
+        <li><strong>YouTube Search</strong> — resultCount for competition.</li>
+        <li><strong>Set</strong> — compute <code>score = trending_score / resultCount</code>.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>3.3  Content Generation Lane</h3>
+      <ul>
+        <li><strong>OpenAI (“Blog Post”)</strong> — 300‑400 words, 3 emoji title.</li>
+        <li><strong>OpenAI (“Short Script”)</strong> — 60‑sec storyboard.</li>
+        <li><strong>OpenAI (“Thumbnail Prompt”)</strong> — minimalist style prompt.</li>
+      </ul>
+      <h3>3.4  Video + Thumbnail Lane</h3>
+      <ul>
+        <li><strong>Pictory API</strong> — <code>POST /render</code> with script.</li>
+        <li><strong>DALL·E 3</strong> — 512×512 thumbnail.</li>
+        <li><strong>Download</strong> — save to <code>/tmp</code>.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="grid two-col" style="margin-top:1.5rem">
+    <div>
+      <h3>3.5  Publishing Lane</h3>
+      <ul>
+        <li><strong>YouTube Upload</strong> — resumable upload + custom thumbnail.</li>
+        <li><strong>WordPress REST</strong> — create &amp; publish post.</li>
+        <li><strong>Twitter/X</strong> — tweet video link + hashtags.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>3.6  Analytics Lane</h3>
+      <ul>
+        <li><strong>Cron 12 h</strong> — pull stats.</li>
+        <li><strong>YouTube videos.list</strong> — views/likes.</li>
+        <li><strong>Google Sheets</strong> — append row.</li>
+        <li><strong>Twilio WhatsApp</strong> — send digest.</li>
+      </ul>
+    </div>
+  </div>
+  <p><em>Important:</em> For manual tests, pair <strong>Webhook</strong> (Respond → “Using Respond to Webhook node”) with a downstream <strong>Respond to Webhook</strong> node to avoid configuration errors.</p>
+</section>
+
+<!-- 4. TESTING -->
+<section>
+  <h2>4  |  Testing Checklist</h2>
+  <ul>
+    <li><strong>Unit:</strong> Execute each lane with sample input.</li>
+    <li><strong>Quota Guard:</strong> IF → skip upload when YouTube <code>quotaRemaining &lt; 2000</code>.</li>
+    <li><strong>Sandbox Publish:</strong> Upload unlisted videos first.</li>
+    <li><strong>Error Workflow:</strong> Global catch → Slack/WhatsApp alert.</li>
+    <li><strong>Load Test:</strong> Cron every 5 min for 1 h → ensure CPU &lt; 70 %.</li>
+  </ul>
+</section>
+
+<!-- 5. PACKAGING  -->
+<section>
+  <h2>5  |  Packaging &amp; Distribution</h2>
+  <ol>
+    <li><strong>Export</strong> workflow → <code>trendforge.json</code>.</li>
+    <li>Create <code>README.md</code> (env vars, docker‑compose, 1‑click import).</li>
+    <li>Zip &amp; upload to Gumroad.</li>
+    <li>Record 5‑min Loom onboarding video.</li>
+    <li>Stripe pricing page: Starter $29 → Pro $49 → Agency $99.</li>
+    <li>Licence webhook: n8n pings your licence API before each run.</li>
+  </ol>
+</section>
+
+<!-- 6. GO‑TO‑MARKET  -->
+<section>
+  <h2>6  |  Go‑to‑Market Timeline (Day 0 → Day 30)</h2>
+  <table>
+    <thead><tr><th style="width:80px">Day</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td>0 – 3</td><td>Finish MVP (script → draft blog).</td></tr>
+      <tr><td>4 – 6</td><td>Add Pictory render &amp; YouTube upload.</td></tr>
+      <tr><td>7</td><td>WhatsApp digest + error handling polish.</td></tr>
+      <tr><td>8</td><td>Deploy docs + landing page (Framer).</td></tr>
+      <tr><td>9</td><td>Release free community edition in n8n forum.</td></tr>
+      <tr><td>10 – 14</td><td>Onboard 3 beta YouTubers via Discord.</td></tr>
+      <tr><td>15</td><td>Publish case study blog.</td></tr>
+      <tr><td>16</td><td>Launch on Product Hunt + X thread.</td></tr>
+      <tr><td>20</td><td>TikTok ads: $10/day → “beginner youtuber”.</td></tr>
+      <tr><td>25</td><td>Hit 20 paid seats → ~$580 MRR.</td></tr>
+      <tr><td>30</td><td>User survey → plan A/B title test (v1.1).</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 7. REVENUE  -->
+<section>
+  <h2>7  |  Revenue Model & Maths</h2>
+  <table>
+    <thead><tr><th>Metric</th><th>Starter Tier</th></tr></thead>
+    <tbody>
+      <tr><td>Price</td><td>$29 / month</td></tr>
+      <tr><td>Hosting cost (self‑host)</td><td>$0</td></tr>
+      <tr><td>Your support time</td><td>≈ 1 h onboarding</td></tr>
+      <tr><td>Gross margin</td><td>≈ 100 %</td></tr>
+      <tr><td>Break‑even</td><td>34 seats → $1 000 MRR<br>(covers your own infra &amp; API bills)</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 8. LEGAL  -->
+<section>
+  <h2>8  |  Legal &amp; Compliance Snapshot</h2>
+  <ul>
+    <li><strong>YouTube TOS:</strong> Respect upload quota &amp; spam policies.</li>
+    <li><strong>Google Trends:</strong> SerpApi shifts scraping liability.</li>
+    <li><strong>Data Privacy:</strong> No personal data stored → GDPR light.</li>
+    <li><strong>EULA:</strong> Restrict resale; include liability disclaimer.</li>
+    <li><strong>Stripe Tax:</strong> Auto‑collect VAT/GST where required.</li>
+  </ul>
+</section>
+
+<!-- 9. MAINTENANCE  -->
+<section>
+  <h2>9  |  Maintenance & Scaling</h2>
+  <ul>
+    <li><strong>Daily:</strong> Check YouTube quota remaining.</li>
+    <li><strong>Weekly:</strong> Review OpenAI spend; switch heavy prompts to GPT‑4o‑mini if needed.</li>
+    <li><strong>Monthly:</strong> Rotate API keys, update images (<code>docker pull n8n:latest</code>).</li>
+    <li><strong>Scaling:</strong> Move n8n to worker ✚ queue mode; add Redis &amp; node pool.</li>
+  </ul>
+</section>
+
+<!-- 10. RESUME  -->
+<section>
+  <h2>10  |  Résumé Snippet</h2>
+  <p><em>Copy–paste after launch:</em></p>
+  <pre><code>Founder &amp; Engineer — TrendForge AI (05/2025 – Present)
+• Designed and commercialised a self‑hosted n8n + OpenAI automation that scrapes live trends, auto‑generates Shorts, blog posts and social teasers, boosting content output 4× for &gt;40 micro‑creators.
+• Implemented quota‑aware YouTube upload pipeline and WhatsApp analytics bot; achieved $X 000 MRR within 2 months.</code></pre>
+</section>
+
+<footer style="text-align:center;font-size:.8rem;color:#6b7280;margin-top:4rem">© 2025 TrendForge AI Blueprint — Draft v1.0</footer>
+
+</body>
+</html>
